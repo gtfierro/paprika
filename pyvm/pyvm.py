@@ -2,17 +2,20 @@ import sys
 import bitstring
 from instructions import *
 
+FP = 0
+SP = 1
+
 class VM:
     debug=True
     def __init__(self, contents):
         self.contents = contents
         # 0 is fp
-        self.REG = {0: 1024, 1: 128, 2: 0, 3: 0, 4: 0,
+        self.REG = {0: 1024, 1: 4096, 2: 0, 3: 0, 4: 0,
              5: 0,  6: 0, 7: 0, 8: 0, 9: 0, 10: 0,
              11: 0, 12: 0, 13: 0, 'fp': 0, 'sp': 0,
              'cmp': 0, 'cmpu': 0
         }
-        self.MEM = bitstring.BitStream(length=4096*8)
+        self.MEM = bitstring.BitStream(length=8192*8)
         self.PC = 0
 
     def dump(self):
@@ -23,15 +26,25 @@ class VM:
     def debug(self, inst, opcode, A=None, B=None, value=None, addr=None):
         if self.debug:
             print 'PC={0} inst={1} opcode={2}'.format(self.PC, inst, opcode)
-            if A is not None:
+            if A == SP:
+                print ' $SP={0}'.format(self.REG[A]),
+            elif A == FP:
+                print ' $FP={0}'.format(self.REG[A]),
+            elif A is not None:
                 print ' RegA({0})={1} '.format(A, self.REG[A]),
-            if B is not None:
+
+            if B == SP:
+                print ' $SP={0}'.format(self.REG[B]),
+            elif B == FP:
+                print ' $FP={0}'.format(self.REG[B]),
+            elif B is not None:
                 print ' RegB({0})={1} '.format(B, self.REG[B]),
+
             if value is not None:
-                print ' value={0} '.format(value),
+                print ' value={0} '.format(bin(value)),
             if addr is not None:
                 print ' addr={0} '.format(addr),
-            print '\n'
+            print ' at {0}'.format(self.contents.bytepos)
 
     def write_memory(self, value, address, length=32):
         b = bitstring.Bits(int=value, length=length)
@@ -225,9 +238,15 @@ class VM:
             self.PC = address
             self.debug(inst, opcode, addr=address)
         elif inst == 'jsra':
-            self.debug(inst, opcode)
-            print "NEED TO IMPELEMENT"
-            sys.exit(1)
+            self.contents.read(8) # discard
+            addr = self.contents.read(32).int
+            # push return addr onto stack (next instruction)
+            self.push_stack(self.PC+6)
+            # push fp on the stack
+            self.push_stack(self.REG[FP])
+            # set pc to target address
+            self.PC = addr
+            self.debug(inst, opcode, addr=addr)
             return
         elif inst == 'ld.b':
             ex = self.contents.read('int:8')
@@ -243,8 +262,8 @@ class VM:
             regA = ex >> 4
             regB = ex & 0xf
             addr = self.REG[regB]
-            value = self.read_memory(addr, 32)
-            self.REG[regA] = value.int
+            value = self.read_memory(addr, 32).int
+            self.REG[regA] = value
             self.debug(inst, opcode, regA, regB, value=value, addr=addr)
             self.PC += 2
         elif inst == 'ld.s':
@@ -286,7 +305,7 @@ class VM:
             self.PC += 6
         elif inst == 'ldi.l':
             regA = self.contents.read('int:4')
-            _ = self.contents.read('int:4') # discard
+            self.contents.read('int:4') # discard
             value = self.contents.read('int:32')
             self.REG[regA] = value
             self.debug(inst, opcode, regA, value=value)
@@ -312,8 +331,10 @@ class VM:
             regA = ex >> 4
             regB = ex & 0xf
             address = self.REG[regB] + self.contents.read('int:16')
-            value = self.read_memory(address, 32)
-            self.REG[regA] = value.int
+            print address
+            self.debug(inst, opcode, regA, regB, addr=address)
+            value = self.read_memory(address, 32).int
+            self.REG[regA] = value
             self.debug(inst, opcode, regA, regB, value=value, addr=address)
             self.PC += 4
         elif inst == 'ldo.b':
@@ -401,15 +422,17 @@ class VM:
             regB = ex & 0xf
             value = self.REG[regB]
             address = self.REG[regA]
-            value = self.write_memory(value, address, 32)
+            self.write_memory(value, address, 32)
             self.REG[regB] += 32
             self.debug(inst, opcode, regA, regB, value=value, addr=address)
             self.PC += 2
         elif inst == 'ret':
-            #TODO
-            _ = self.contents.read(8).int
-            self.PC += 2
-            return
+            # pop old frame pointer into $fp
+            self.REG[FP] = self.pop_stack().int
+            # pop return addr into pc
+            self.PC = self.pop_stack().int
+            self.debug(inst, opcode, FP, SP)
+            print 'ret', self.REG[1], self.PC
         elif inst == 'sex.b' or inst == 'sex.s':
             ex = self.contents.read('int:8')
             regA = ex >> 4
@@ -554,6 +577,20 @@ class VM:
         else:
             print inst, opcode
 
+    def push_stack(self, value):
+        sp = self.REG[SP]
+        #print 'PUSH', value, 'at', sp
+        self.write_memory(value, sp, 32)
+        self.REG[SP] = sp-32
+
+    def pop_stack(self):
+        self.REG[SP] += 32
+        sp = self.REG[SP]
+
+        #print 'POP from', sp,
+        value = self.read_memory(sp, 32)
+        #print value
+        return value
 
 
 def cmp(A, B):
